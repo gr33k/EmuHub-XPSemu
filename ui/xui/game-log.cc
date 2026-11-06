@@ -21,6 +21,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -42,7 +43,8 @@ extern "C" int xemu_ps5_threads_made;
 #endif
 
 static int g_fd = -1;     // The game's log
-static off_t g_from;      // How much of xemu.log (stderr) is copied
+static int g_source_fd = -1; // Read-only handle for xemu.log
+static off_t g_from;      // How much of xemu.log is copied
 static double g_started;  // ImGui time the game started
 static double g_next_copy, g_next_stats;
 static double g_last_cpu, g_last_wall;
@@ -127,13 +129,20 @@ static void Write(const std::string &text)
 extern "C" void xemu_ps5_game_log_copy(void)
 {
     struct stat st;
-    if (g_fd < 0 || fstat(STDERR_FILENO, &st) != 0) {
+    if (g_fd < 0 || g_source_fd < 0 || fstat(g_source_fd, &st) != 0) {
         return;
+    }
+    // Keep the newest fault context even if a burst exceeds one copy budget.
+    constexpr off_t kMaxCopy = 16 * 1024;
+    if (st.st_size - g_from > kMaxCopy) {
+        static const char skipped[] = "\n[xemu.log: older output omitted]\n";
+        (void)!write(g_fd, skipped, sizeof(skipped) - 1);
+        g_from = st.st_size - kMaxCopy;
     }
     char buf[4096];
     while (g_from < st.st_size) {
         size_t want = st.st_size - g_from;
-        ssize_t n = pread(STDERR_FILENO, buf,
+        ssize_t n = pread(g_source_fd, buf,
                           want < sizeof(buf) ? want : sizeof(buf), g_from);
         if (n <= 0) {
             break;
@@ -175,8 +184,15 @@ void GameLogStart(const GameLogInfo &info)
         fprintf(stderr, "XPSemu: can't write %s\n", path.c_str());
         return;
     }
+    std::string source_path = std::string(xemu_settings_get_base_path()) +
+                              "xemu.log";
+    g_source_fd = open(source_path.c_str(), O_RDONLY);
+    if (g_source_fd < 0) {
+        fprintf(stderr, "XPSemu: game log source open failed errno=%d\n", errno);
+    }
     struct stat st;
-    g_from = fstat(STDERR_FILENO, &st) == 0 ? st.st_size : 0;
+    g_from = g_source_fd >= 0 && fstat(g_source_fd, &st) == 0 ?
+                 st.st_size : 0;
 
     char now[64];
     time_t t = time(NULL);
@@ -299,6 +315,10 @@ void GameLogStop(const char *why)
           Elapsed(ImGui::GetTime() - g_started) + " ==\n");
     close(g_fd);
     g_fd = -1;
+    if (g_source_fd >= 0) {
+        close(g_source_fd);
+        g_source_fd = -1;
+    }
 }
 
 void GameLogNote(const std::string &text)

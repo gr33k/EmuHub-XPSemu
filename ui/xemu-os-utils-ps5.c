@@ -160,7 +160,7 @@ static void write_str(const char *s)
 static void crash_handler(int sig, siginfo_t *info, void *context)
 {
     static volatile sig_atomic_t in_handler;
-    char buf[160];
+    char buf[224];
 
     if (in_handler) {
         _exit(128 + sig);
@@ -175,9 +175,9 @@ static void crash_handler(int sig, siginfo_t *info, void *context)
     const uint64_t *ctx = (const uint64_t *)context;
     uint64_t rip = ctx[0xe0 / 8], rsp = ctx[0xf8 / 8], rbp = ctx[0x88 / 8];
     snprintf(buf, sizeof(buf),
-             "\n*** xemu crashed: signal %d, fault address %p, thread %p\n"
+             "\n*** xemu crashed: signal %d code %d, fault address %p, thread %p\n"
              "*** rip %#lx rsp %#lx rbp %#lx (eboot+%#lx)\n",
-             sig, info->si_addr, (void *)pthread_self(), (unsigned long)rip,
+             sig, info->si_code, info->si_addr, (void *)pthread_self(), (unsigned long)rip,
              (unsigned long)rsp, (unsigned long)rbp,
              (unsigned long)(rip - EBOOT_BASE));
     write_str(buf);
