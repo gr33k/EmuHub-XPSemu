@@ -505,6 +505,7 @@ static const GameProfile &ProfileOf(const DashboardScene::Game &game)
 }
 
 static std::vector<std::string> GameDirs(); // Below
+static std::string EmuHubHandoffGame(); // The selected, complete PS5-local ISO
 
 static void ListCovers()
 {
@@ -883,6 +884,27 @@ void DashboardScene::ScanGames()
             }
         }
     }
+    // EmuHub keeps its selected ISO in its title's content directory. It is
+    // deliberately outside XPSemu's independent games library.
+    std::string handoff = EmuHubHandoffGame();
+    if (!handoff.empty()) {
+        std::error_code handoff_ec;
+        if (std::filesystem::is_regular_file(handoff, handoff_ec)) {
+            GameArt &art = Art(handoff);
+            if (!art.read) {
+                art.read = true;
+                art.stem = std::filesystem::path(handoff).stem().string();
+                XisoReadInfo(handoff.c_str(), &art.info);
+            }
+            if (art.info.xbe_size && !art.info.full_disc) {
+                m_games.push_back({ art.info.title.empty() ? art.stem : art.info.title,
+                                    handoff, art.info.title_id, false });
+                fprintf(stderr, "XPSemu: EmuHub handoff ready: %s\n", handoff.c_str());
+            } else {
+                fprintf(stderr, "XPSemu: EmuHub handoff is not a playable XISO\n");
+            }
+        }
+    }
     std::sort(m_games.begin(), m_games.end(), [](const Game &a, const Game &b) {
         return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
     });
@@ -934,6 +956,7 @@ static bool SetupRecheck(int games); // First run, below
 //
 
 #include "boot-logo.h"
+#include "../xemu-ps5-owner-title.h"
 
 static const float kBootLen = 4.7f;
 static XemuTexture g_boot_logo;
@@ -1115,7 +1138,8 @@ int sceKernelGetAppInfo(pid_t pid, XpsAppInfo *info);
 int xemu_ps5_import_ok(const char *name);
 }
 
-static const char *const kMainTitle = "PPSA97358";
+static const char *const kMainTitle = XEMU_PS5_OWNER_TITLE;
+static const char *const kEmuHubTitle = "PPSA91337";
 static const char *const kHomebrew = "/data/homebrew";
 
 // The title ID this copy of XPSemu runs as ("" if unknown).
@@ -1143,11 +1167,49 @@ static std::string ReadSmallFile(const std::string &path)
     return text;
 }
 
+static std::string EmuHubHandoffGame()
+{
+    if (OwnTitleId() != kEmuHubTitle) {
+        return "";
+    }
+    std::string path = ReadSmallFile(
+        std::string(kHomebrew) + "/" + kEmuHubTitle + "/xpsemu-game.txt");
+    static const std::string prefix = "/app0/content/eh-";
+    if (path.size() != prefix.size() + 16 + 4 ||
+        path.compare(0, prefix.size(), prefix) != 0 ||
+        path.compare(path.size() - 4, 4, ".iso") != 0) {
+        return "";
+    }
+    for (size_t i = prefix.size(); i < prefix.size() + 16; i++) {
+        if (!((path[i] >= '0' && path[i] <= '9') ||
+              (path[i] >= 'a' && path[i] <= 'f'))) {
+            return "";
+        }
+    }
+    // A provider LoadExec can expose a different /app0 mount from the
+    // frontend. Use the fixed title content location if that happens.
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        std::string direct = std::string(kHomebrew) + "/" + kEmuHubTitle +
+                             "/content/" + path.substr(prefix.size() - 3);
+        ec.clear();
+        if (std::filesystem::is_regular_file(direct, ec)) {
+            fprintf(stderr, "XPSemu: EmuHub handoff direct path: %s\n", direct.c_str());
+            return direct;
+        }
+        fprintf(stderr, "XPSemu: EmuHub handoff missing at app0 and direct path\n");
+    }
+    return path;
+}
+
 // The disc this copy is a shortcut to, or "" (the real XPSemu).
 static std::string ShortcutGame()
 {
     std::string id = OwnTitleId();
     fprintf(stderr, "XPSemu: running as %s\n", id.empty() ? "(unknown)" : id.c_str());
+    if (id == kEmuHubTitle) {
+        return EmuHubHandoffGame();
+    }
     if (id.empty() || id == kMainTitle) {
         return "";
     }
@@ -1403,6 +1465,11 @@ static std::string MakeBackground(const ShortcutJob &job, const std::string &sta
 
 static std::string MakeShortcut(const ShortcutJob &job)
 {
+#if XPSEMU_EMUHUB_PROVIDER
+    // This eboot is a provider inside EmuHub, not a standalone title package.
+    (void)job;
+    return "Home screen shortcuts are unavailable from the EmuHub provider";
+#else
     std::error_code ec;
     if (job.remove) {
         std::filesystem::remove_all(job.dir, ec);
@@ -1509,10 +1576,16 @@ static std::string MakeShortcut(const ShortcutJob &job)
     return job.name + ": shortcut made (" + id + ")" +
            (no_background.empty() ? " with its own background" : "") +
            ", on the home screen in a few seconds";
+#endif
 }
 
 void DashboardScene::ToggleShortcut(const Game &game)
 {
+#if XPSEMU_EMUHUB_PROVIDER
+    (void)game;
+    xemu_queue_notification("Home screen shortcuts are unavailable from the EmuHub provider");
+    return;
+#else
     {
         std::lock_guard<std::mutex> guard(g_shortcut_lock);
         if (g_shortcut_busy) {
@@ -1542,6 +1615,7 @@ void DashboardScene::ToggleShortcut(const Game &game)
         g_shortcut_message = message;
         g_shortcut_busy = false;
     }).detach();
+#endif
 }
 
 void DashboardScene::Show()
@@ -1697,6 +1771,7 @@ void DashboardScene::LaunchNow(const Game &game, bool quiet)
     CurtainStart(game, quiet); // Over the Xbox's boot until the game runs
     GameLogStart({ game.name, game.path, KeyOf(game), xiso.title,
                    game.title_id, game.full_disc, overrides, patches });
+    fprintf(stderr, "XPSemu: launch step game-log-returned\n");
     if (!quiet) {
         UiSoundPlay(UI_SOUND_LAUNCH);
     }
@@ -1706,17 +1781,23 @@ void DashboardScene::LaunchNow(const Game &game, bool quiet)
     if (runstate_is_running()) {
         vm_stop(RUN_STATE_PAUSED);
     }
+    fprintf(stderr, "XPSemu: launch step vm-paused\n");
     if (game.title_id) {
         xemu_repair_saves(game.title_id);
     }
+    fprintf(stderr, "XPSemu: launch step saves-checked\n");
     // Keep game boots quick after the Xbox starts the title.
     xbox_smc_set_short_animation();
+    fprintf(stderr, "XPSemu: launch step boot-animation-set\n");
     ActionReset();
+    fprintf(stderr, "XPSemu: launch step reset-requested\n");
     AddRecent(game.path);
+    fprintf(stderr, "XPSemu: launch step recent-saved\n");
     m_can_return = true;
     m_game_started = true;
     m_paused_vm = true; // Hide starts it (it may never have run)
     Hide();
+    fprintf(stderr, "XPSemu: launch step guest-resumed\n");
 }
 
 //
@@ -2093,6 +2174,9 @@ void DashboardScene::WatchTick()
 
 void DashboardScene::OpenXboxDashboard()
 {
+    fprintf(stderr, "XPSemu: Xbox Dashboard selected, game_started=%d dvd=%s\n",
+            m_game_started ? 1 : 0,
+            g_config.sys.files.dvd_path ? g_config.sys.files.dvd_path : "(null)");
     // An Xbox with no disc starts its own dashboard from the hard disk. If
     // that's what's running already (no game since XPSemu started), just
     // carry on with it.
@@ -2102,6 +2186,7 @@ void DashboardScene::OpenXboxDashboard()
         m_can_return = true;
         m_paused_vm = true; // Hide starts it (it may never have run)
         Hide();
+        fprintf(stderr, "XPSemu: Xbox Dashboard resumed guest VM\n");
     };
     if (m_game_started || (dvd && dvd[0])) {
         ParkThen([this, open]() {
@@ -2204,7 +2289,7 @@ static void StressWatchdog()
             xemu_dev_journal('W', "UI stopped for 45 s");
             fprintf(stderr, "XPSemu: stress test: the UI stopped, starting again\n");
             sceSystemServiceLoadExec("/app0/eboot.bin", NULL);
-            sceSystemServiceLoadExec("/data/homebrew/PPSA97358/eboot.bin", NULL);
+            sceSystemServiceLoadExec(XEMU_PS5_OWNER_EBOOT, NULL);
         }
     }
 }
@@ -2385,33 +2470,44 @@ void DashboardScene::DrawDev(float s, float a, float x, float y, float ay2)
 }
 #endif // XPSEMU_DEV
 
-void DashboardScene::QuitApp(bool restart)
+void DashboardScene::QuitApp(bool restart, bool to_emuhub)
 {
-    ParkThen([this, restart]() { QuitAppNow(restart); });
+    ParkThen([this, restart, to_emuhub]() { QuitAppNow(restart, to_emuhub); });
 }
 
-void DashboardScene::QuitAppNow(bool restart)
+void DashboardScene::QuitAppNow(bool restart, bool to_emuhub)
 {
     if (m_game_started) {
         GameStop();
         PatchesStop();
         WatchStop();
-        GameLogStop(restart ? "XPSemu restarted" : "XPSemu exited");
+        GameLogStop(restart ? "XPSemu restarted" :
+                    to_emuhub ? "Returned to EmuHub" : "XPSemu exited");
     }
     xemu_settings_save();
     if (g_shortcuts_changed) {
         ShadowMountScan(); // Again, so nothing waits for its next round
     }
-    fprintf(stderr, "XPSemu: %s\n", restart ? "restarting" : "exiting");
+    fprintf(stderr, "XPSemu: %s\n", restart ? "restarting" :
+            to_emuhub ? "returning to EmuHub" : "exiting");
 #if XPSEMU_DEV
     xemu_dev_journal('Q', "%s", restart ? "restart" : "exit");
 #endif
     fflush(NULL);
     if (!xemu_ps5_import_ok("sceSystemServiceLoadExec")) {
         fprintf(stderr, "XPSemu: no sceSystemServiceLoadExec\n");
+    } else if (to_emuhub) {
+#if XPSEMU_EMUHUB_PROVIDER
+        for (const char *path : { "/app0/es-de/es-de.bin",
+                                  XEMU_PS5_OWNER_HOME "/es-de/es-de.bin" }) {
+            int rc = sceSystemServiceLoadExec(path, NULL);
+            fprintf(stderr, "XPSemu: EmuHub return via %s refused (%#x)\n",
+                    path, rc);
+        }
+#endif
     } else if (restart) {
         for (const char *path : { "/app0/eboot.bin",
-                                  "/data/homebrew/PPSA97358/eboot.bin" }) {
+                                  XEMU_PS5_OWNER_EBOOT }) {
             int rc = sceSystemServiceLoadExec(path, NULL);
             fprintf(stderr, "XPSemu: restart via %s refused (%#x)\n", path, rc);
         }
@@ -2419,9 +2515,10 @@ void DashboardScene::QuitAppNow(bool restart)
         sceSystemServiceLoadExec("exit", NULL);
         _exit(0);
     }
-    xemu_queue_notification(restart ?
-        "Couldn't restart XPSemu: close it and open it again" :
-        "Couldn't exit XPSemu: close it from the PS5's menu");
+    xemu_queue_notification(to_emuhub ?
+        "Couldn't return to EmuHub: close XPSemu from the PS5 menu" :
+        restart ? "Couldn't restart XPSemu: close it and open it again" :
+                  "Couldn't exit XPSemu: close it from the PS5's menu");
 }
 
 void DashboardScene::StopGame(const char *why)
@@ -3435,6 +3532,10 @@ void DashboardScene::HandleInputInner()
         if (accept || right) {
             if (m_page == MENU_XBOX_DASHBOARD) {
                 OpenXboxDashboard();
+#if XPSEMU_EMUHUB_PROVIDER
+            } else if (m_page == MENU_EMUHUB_RETURN) {
+                QuitApp(false, true);
+#endif
             } else {
                 m_in_page = true;
                 m_settings_cat = -1;
@@ -4101,7 +4202,11 @@ void DashboardScene::DrawMainMenu(float s, float a)
 {
     static const char *const names[MENU__COUNT] = { "Games", "Settings",
                                                     "System",
-                                                    "Xbox Dashboard" };
+                                                    "Xbox Dashboard"
+#if XPSEMU_EMUHUB_PROVIDER
+                                                    , "Return to EmuHub"
+#endif
+                                                  };
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImFont *font = g_font_mgr.m_menu_font;
     ImFont *small = g_font_mgr.m_menu_font_small;
@@ -6420,6 +6525,10 @@ void DashboardScene::DrawHints(float s)
     } else if (!m_in_page) {
         hints.push_back({ GLYPH_CROSS, m_np_focus ? "Resume" :
                                        m_shelf ? "Play" :
+#if XPSEMU_EMUHUB_PROVIDER
+                                       m_page == MENU_EMUHUB_RETURN ?
+                                                 "Return" :
+#endif
                                        m_page == MENU_XBOX_DASHBOARD ?
                                                  "Start" :
                                                  "Open" });

@@ -48,17 +48,29 @@ int event_notifier_init(EventNotifier *e, int active)
     if (ret >= 0) {
         e->rfd = e->wfd = ret;
     } else {
+#ifdef __PROSPERO__
+        fprintf(stderr, "xemu PS5 notifier: eventfd unavailable errno=%d\n", errno);
+#endif
         if (errno != ENOSYS) {
             return -errno;
         }
         if (!g_unix_open_pipe(fds, FD_CLOEXEC, NULL)) {
+#ifdef __PROSPERO__
+            fprintf(stderr, "xemu PS5 notifier: pipe creation failed errno=%d\n", errno);
+#endif
             return -errno;
         }
         if (!qemu_set_blocking(fds[0], false, &local_err)) {
+#ifdef __PROSPERO__
+            fprintf(stderr, "xemu PS5 notifier: read pipe nonblocking failed errno=%d\n", errno);
+#endif
             ret = -errno;
             goto fail;
         }
         if (!qemu_set_blocking(fds[1], false, &local_err)) {
+#ifdef __PROSPERO__
+            fprintf(stderr, "xemu PS5 notifier: write pipe nonblocking failed errno=%d\n", errno);
+#endif
             ret = -errno;
             goto fail;
         }

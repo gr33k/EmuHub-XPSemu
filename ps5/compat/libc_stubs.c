@@ -41,18 +41,27 @@ int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
 int pipe2(int fds[2], int flags)
 {
     if (flags & ~(O_CLOEXEC | O_NONBLOCK)) {
+        fprintf(stderr, "xemu PS5 pipe2: unsupported flags=0x%x\n", flags);
         errno = EINVAL;
         return -1;
     }
     if (pipe(fds) < 0) {
+        fprintf(stderr, "xemu PS5 pipe2: pipe failed errno=%d\n", errno);
         return -1;
     }
     for (int i = 0; i < 2; i++) {
         if ((flags & O_CLOEXEC) && fcntl(fds[i], F_SETFD, FD_CLOEXEC) < 0) {
-            goto fail;
+            /* The PS5 title libc rejects FD_CLOEXEC with EINVAL. This title
+             * cannot fork/exec a child, so keep the working notifier pipe. */
+            if (errno != EINVAL && errno != ENOSYS) {
+                fprintf(stderr, "xemu PS5 pipe2: cloexec failed fd=%d errno=%d\n", fds[i], errno);
+                goto fail;
+            }
+            fprintf(stderr, "xemu PS5 pipe2: cloexec unavailable fd=%d errno=%d\n", fds[i], errno);
         }
         if ((flags & O_NONBLOCK) &&
             fcntl(fds[i], F_SETFL, fcntl(fds[i], F_GETFL) | O_NONBLOCK) < 0) {
+            fprintf(stderr, "xemu PS5 pipe2: nonblock failed fd=%d errno=%d\n", fds[i], errno);
             goto fail;
         }
     }

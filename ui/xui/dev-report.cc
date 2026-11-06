@@ -7,6 +7,7 @@
 // (at your option) any later version.
 //
 #include "dev-report.hh"
+#include "../xemu-ps5-owner-title.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -20,7 +21,7 @@
 #endif
 #ifndef DEV_REPORT_SYMBOLS
 #define DEV_REPORT_SYMBOLS { "/app0/dev-symbols.txt", \
-                             "/data/homebrew/PPSA97358/dev-symbols.txt" }
+                             XEMU_PS5_OWNER_HOME "/dev-symbols.txt" }
 #endif
 #ifndef DEV_REPORT_BUILD
 extern "C" const char *xemu_dev_build(void);

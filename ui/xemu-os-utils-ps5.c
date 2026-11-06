@@ -17,6 +17,7 @@
 
 #include "xemu-os-utils.h"
 #include "xemu-settings.h"
+#include "xemu-ps5-owner-title.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -227,7 +228,7 @@ static void crash_handler(int sig, siginfo_t *info, void *context)
     if (xemu_dev_stress_on) {
         write_str("*** stress test: starting XPSemu again\n");
         sceSystemServiceLoadExec("/app0/eboot.bin", NULL);
-        sceSystemServiceLoadExec("/data/homebrew/PPSA97358/eboot.bin", NULL);
+        sceSystemServiceLoadExec(XEMU_PS5_OWNER_EBOOT, NULL);
     }
 #endif
     _exit(128 + sig);
@@ -253,7 +254,7 @@ static void report_unresolved_imports(void)
      * but jailbroken, xemu can read where it was installed. */
     static const char *const paths[] = {
         "/app0/imports.txt",
-        "/data/homebrew/PPSA97358/imports.txt",
+        XEMU_PS5_OWNER_IMPORTS,
     };
     FILE *f = NULL;
     for (size_t i = 0; !f && i < sizeof(paths) / sizeof(paths[0]); i++) {

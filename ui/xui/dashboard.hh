@@ -16,6 +16,7 @@
 //
 #pragma once
 #include "../xpsemu-dev.h"
+#include "../xemu-ps5-owner-title.h"
 #include <map>
 #include <functional>
 #include <string>
@@ -51,7 +52,12 @@ protected:
     // The main menu: three pages, then the Xbox's own dashboard.
     enum Page { PAGE_GAMES, PAGE_SETTINGS, PAGE_SYSTEM, PAGE__COUNT };
     static const int MENU_XBOX_DASHBOARD = PAGE__COUNT;
+#if XPSEMU_EMUHUB_PROVIDER
+    static const int MENU_EMUHUB_RETURN = PAGE__COUNT + 1;
+    static const int MENU__COUNT = PAGE__COUNT + 2;
+#else
     static const int MENU__COUNT = PAGE__COUNT + 1;
+#endif
 
     bool m_visible = false;
     float m_alpha = 0;      // Fades in on Show, out on Hide
@@ -144,7 +150,7 @@ protected:
                      bool right);
     void DrawViewer(float s, float a);
     bool ViewerLoading();
-    void QuitApp(bool restart);
+    void QuitApp(bool restart, bool to_emuhub = false);
 #if XPSEMU_DEV
     void DevStressLaunchNext();
     void DrawDev(float s, float a, float x, float y, float ay2);
@@ -248,7 +254,7 @@ protected:
     void StopGame(const char *why);
     void StopGameNow(const char *why);
     void LaunchNow(const Game &game, bool quiet);
-    void QuitAppNow(bool restart);
+    void QuitAppNow(bool restart, bool to_emuhub);
     void ParkThen(std::function<void()> next);
     // Before a game is stopped, the Xbox runs on (muted, behind this
     // dashboard) until its hard disk is quiet, so a save just made gets
